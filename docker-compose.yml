@@ -1,0 +1,112 @@
+# Bot Agaga Docker部署配置 - 75755.bet
+# 适用于VPS部署
+
+version: '3.8'
+
+services:
+  # Bot Agaga主应用
+  bot-agaga:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: bot-agaga-75755
+    restart: unless-stopped
+    ports:
+      - "8002:8002"  # 使用8002端口
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./backups:/app/backups
+    env_file:
+      - .env  # 环境配置
+    environment:
+      - PYTHONPATH=/app
+      - HOST=0.0.0.0
+      - PORT=8002
+      - DOMAIN=75755.bet
+    networks:
+      - bot-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    depends_on:
+      - redis
+
+  # Redis缓存服务
+  redis:
+    image: redis:7-alpine
+    container_name: bot-agaga-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    networks:
+      - bot-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Nginx反向代理
+  nginx:
+    image: nginx:alpine
+    container_name: bot-agaga-nginx-75755
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx:/etc/nginx/conf.d
+      - ./nginx/ssl:/etc/nginx/ssl
+      - /etc/letsencrypt:/etc/letsencrypt:ro  # SSL证书挂载
+    depends_on:
+      - bot-agaga
+    networks:
+      - bot-network
+    healthcheck:
+      test: ["CMD", "nginx", "-t"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # 数据库备份服务
+  backup:
+    image: alpine:latest
+    container_name: bot-agaga-backup
+    restart: unless-stopped
+    volumes:
+      - ./data:/app/data:ro
+      - ./backups:/app/backups
+    environment:
+      - BACKUP_SCHEDULE=0 2 * * *  # 每天凌晨2点备份
+    command: |
+      sh -c '
+        apk add --no-cache dcron
+        echo "0 2 * * * cd /app && tar -czf /app/backups/backup_$$(date +%Y%m%d_%H%M%S).tar.gz data/" | crontab -
+        crond -f
+      '
+    networks:
+      - bot-network
+
+networks:
+  bot-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+volumes:
+  redis_data:
+    driver: local
+  data:
+    driver: local
+  logs:
+    driver: local
+  backups:
+    driver: local
